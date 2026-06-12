@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
 	       'path_planner = path_planner.main:main',
+	       'emergency_stop_keyboard = path_planner.emergency_stop_keyboard:main'
         ],
     },
 )

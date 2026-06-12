@@ -1,0 +1,1 @@
+self.emergency_stop_active = False

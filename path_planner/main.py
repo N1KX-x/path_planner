@@ -4,7 +4,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Boll
+from std_msgs.msg import Bool
+
 import math
 
 from .occupancy_grid import OccupancyGrid
@@ -22,7 +23,8 @@ from .config import (
     FRONT_OBSTACLE_STOP_DISTANCE,
     FRONT_DETECTION_ANGLE,
     PATH_DOWNSAMPLE_STEP,
-    GOAL_TOLERANCE
+    GOAL_TOLERANCE,
+    ENABLE_EMERGENCY_STOP
 )
 
 
@@ -31,7 +33,7 @@ class DijkstraNavigator(Node):
         super().__init__("dijkstra_navigator")
 
         # -----------------------------
-        # Parameters
+        # Goal parameters
         # -----------------------------
         self.declare_parameter("goal_x", DEFAULT_GOAL_X)
         self.declare_parameter("goal_y", DEFAULT_GOAL_Y)
@@ -40,7 +42,7 @@ class DijkstraNavigator(Node):
         self.goal_y = float(self.get_parameter("goal_y").value)
 
         # -----------------------------
-        # Map, planner, follower
+        # Map / planner / follower
         # -----------------------------
         self.grid = OccupancyGrid(
             width_m=MAP_WIDTH_M,
@@ -70,11 +72,13 @@ class DijkstraNavigator(Node):
         self.path = []
         self.path_index = 0
         self.need_replan = True
-
         self.goal_reached = False
 
+        # Emergency stop state
+        self.emergency_stop_active = False
+
         # -----------------------------
-        # ROS publishers/subscribers
+        # ROS subscribers / publisher
         # -----------------------------
         self.scan_sub = self.create_subscription(
             LaserScan,
@@ -90,6 +94,13 @@ class DijkstraNavigator(Node):
             10
         )
 
+        self.estop_sub = self.create_subscription(
+            Bool,
+            "/emergency_stop",
+            self.emergency_stop_callback,
+            10
+        )
+
         self.cmd_pub = self.create_publisher(
             Twist,
             "/cmd_vel",
@@ -100,6 +111,17 @@ class DijkstraNavigator(Node):
 
         self.get_logger().info("Dijkstra Navigator started.")
         self.get_logger().info(f"Goal set to: ({self.goal_x}, {self.goal_y})")
+        self.get_logger().info("Emergency stop topic: /emergency_stop")
+
+    # --------------------------------------------------
+    # Emergency stop callback
+    # --------------------------------------------------
+    def emergency_stop_callback(self, msg):
+        self.emergency_stop_active = msg.data
+
+        if self.emergency_stop_active:
+            self.get_logger().warn("EMERGENCY STOP ACTIVE")
+            self.stop_robot()
 
     # --------------------------------------------------
     # Odometry callback
@@ -109,7 +131,7 @@ class DijkstraNavigator(Node):
         odom_y = msg.pose.pose.position.y
         yaw = quaternion_to_yaw(msg.pose.pose.orientation)
 
-        # Set the robot's starting position as origin
+        # First odom reading becomes local origin
         if not self.initial_pose_set:
             self.initial_x = odom_x
             self.initial_y = odom_y
@@ -119,11 +141,10 @@ class DijkstraNavigator(Node):
             self.get_logger().info("Initial robot pose saved as origin (0, 0).")
             return
 
-        # Convert odom pose into local coordinate frame
+        # Convert odom pose into local starting frame
         dx = odom_x - self.initial_x
         dy = odom_y - self.initial_y
 
-        # Rotate into the robot-start coordinate system
         cos_t = math.cos(-self.initial_theta)
         sin_t = math.sin(-self.initial_theta)
 
@@ -140,7 +161,7 @@ class DijkstraNavigator(Node):
         if not self.initial_pose_set:
             return
 
-        # Update obstacle map from LiDAR
+        # Update map from LiDAR
         self.grid.update_from_lidar(
             scan_msg=msg,
             robot_x=self.robot_x,
@@ -148,8 +169,9 @@ class DijkstraNavigator(Node):
             robot_theta=self.robot_theta
         )
 
-        # If something is too close in front, force replanning
+        # Emergency obstacle stop
         if self.obstacle_too_close(msg):
+            self.get_logger().warn("Obstacle detected in front. Stopping and replanning.")
             self.stop_robot()
             self.need_replan = True
 
@@ -157,11 +179,22 @@ class DijkstraNavigator(Node):
     # Main control loop
     # --------------------------------------------------
     def control_loop(self):
+        # Keyboard emergency stop overrides everything
+        if ENABLE_EMERGENCY_STOP and self.emergency_stop_active:
+            self.stop_robot()
+            return
+
         if not self.initial_pose_set:
             return
 
         if self.goal_reached:
             self.stop_robot()
+            return
+
+        # Extra safety: do not move if obstacle is already too close
+        if self.latest_scan is not None and self.obstacle_too_close(self.latest_scan):
+            self.stop_robot()
+            self.need_replan = True
             return
 
         # Check if goal reached
@@ -187,16 +220,16 @@ class DijkstraNavigator(Node):
 
             self.need_replan = False
 
-        # If path is empty, stop
+        # No valid path
         if not self.path:
             self.stop_robot()
             return
 
-        # Follow path
         if self.path_index >= len(self.path):
             self.stop_robot()
             return
 
+        # Follow current waypoint
         target = self.path[self.path_index]
 
         cmd, reached_waypoint = self.follower.compute_cmd_vel(
@@ -209,6 +242,12 @@ class DijkstraNavigator(Node):
 
         if reached_waypoint:
             self.path_index += 1
+            return
+
+        # Final safety check before publishing velocity
+        if self.latest_scan is not None and self.obstacle_too_close(self.latest_scan):
+            self.stop_robot()
+            self.need_replan = True
             return
 
         self.cmd_pub.publish(cmd)
@@ -241,22 +280,27 @@ class DijkstraNavigator(Node):
         if cell_path is None or len(cell_path) == 0:
             return False
 
-        # Convert grid path to world path
         world_path = []
+
         for cell in cell_path:
             x, y = self.grid.grid_to_world(cell)
             world_path.append((x, y))
 
-        # Reduce number of waypoints
-        self.path = self.downsample_path(world_path, step=PATH_DOWNSAMPLE_STEP)
+        self.path = self.downsample_path(
+            world_path,
+            step=PATH_DOWNSAMPLE_STEP
+        )
+
         self.path_index = 0
 
-        self.get_logger().info(f"New path planned with {len(self.path)} waypoints.")
+        self.get_logger().info(
+            f"New path planned with {len(self.path)} waypoints."
+        )
 
         return True
 
     # --------------------------------------------------
-    # Reduce path points
+    # Downsample path
     # --------------------------------------------------
     def downsample_path(self, path, step=3):
         if len(path) <= 2:
@@ -270,7 +314,7 @@ class DijkstraNavigator(Node):
         return new_path
 
     # --------------------------------------------------
-    # Emergency obstacle detection
+    # Safer obstacle detection
     # --------------------------------------------------
     def obstacle_too_close(self, scan_msg):
         front_ranges = []
@@ -282,8 +326,18 @@ class DijkstraNavigator(Node):
                 angle += scan_msg.angle_increment
                 continue
 
-            # Front area
-            if -FRONT_DETECTION_ANGLE <= angle <= FRONT_DETECTION_ANGLE:
+            if r < scan_msg.range_min or r > scan_msg.range_max:
+                angle += scan_msg.angle_increment
+                continue
+
+            # Normalize angle to [-pi, pi]
+            normalized_angle = math.atan2(
+                math.sin(angle),
+                math.cos(angle)
+            )
+
+            # Front sector
+            if abs(normalized_angle) <= FRONT_DETECTION_ANGLE:
                 front_ranges.append(r)
 
             angle += scan_msg.angle_increment
@@ -294,6 +348,9 @@ class DijkstraNavigator(Node):
         min_front = min(front_ranges)
 
         if min_front < FRONT_OBSTACLE_STOP_DISTANCE:
+            self.get_logger().warn(
+                f"Obstacle too close: {min_front:.2f} m"
+            )
             return True
 
         return False
@@ -304,7 +361,12 @@ class DijkstraNavigator(Node):
     def stop_robot(self):
         cmd = Twist()
         cmd.linear.x = 0.0
+        cmd.linear.y = 0.0
+        cmd.linear.z = 0.0
+        cmd.angular.x = 0.0
+        cmd.angular.y = 0.0
         cmd.angular.z = 0.0
+
         self.cmd_pub.publish(cmd)
 
 
