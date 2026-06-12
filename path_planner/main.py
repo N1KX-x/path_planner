@@ -11,7 +11,7 @@ import math
 from .occupancy_grid import OccupancyGrid
 from .dijkstra_planner import DijkstraPlanner
 from .path_follower import PathFollower
-from .utils import quaternion_to_yaw, normalize_angle
+from .utils import quaternion_to_yaw, normalize_angle, lidar_range_to_meters
 
 from .config import (
     DEFAULT_GOAL_X,
@@ -326,7 +326,9 @@ class DijkstraNavigator(Node):
                 angle += scan_msg.angle_increment
                 continue
 
-            if r < scan_msg.range_min or r > scan_msg.range_max:
+            r = lidar_range_to_meters(r)
+
+            if r <= 0.0:
                 angle += scan_msg.angle_increment
                 continue
 

@@ -1,6 +1,7 @@
 import math
 
 from .config import MAX_LIDAR_OBSTACLE_RANGE
+from .utils import lidar_range_to_meters
 
 
 class OccupancyGrid:
@@ -130,11 +131,12 @@ class OccupancyGrid:
                 angle += scan_msg.angle_increment
                 continue
 
-            if r < scan_msg.range_min or r > scan_msg.range_max:
+            r = lidar_range_to_meters(r)
+
+            if r <= 0.0:
                 angle += scan_msg.angle_increment
                 continue
 
-            # Ignore far readings
             if r > MAX_LIDAR_OBSTACLE_RANGE:
                 angle += scan_msg.angle_increment
                 continue

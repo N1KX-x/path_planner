@@ -44,3 +44,20 @@ def clamp(value, min_value, max_value):
         return max_value
 
     return value
+
+def lidar_range_to_meters(value):
+    """
+    Convert LiDAR range to meters.
+
+    Normal ROS LaserScan should already be in meters.
+    But this robot's LiDAR appears to publish centimeters:
+        range_max = 100.0
+        example range = 234.0
+
+    So values larger than 20 are treated as centimeters.
+    """
+
+    if value > 20.0:
+        return value / 100.0
+
+    return value
