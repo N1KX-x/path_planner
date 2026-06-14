@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='ykgroup',
     maintainer_email='ykgroup@todo.todo',
-    description='TODO: Package description',
+    description='Dijkstra path planner with LiDAR obstacle avoidance and emergency stop',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -24,8 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-	       'path_planner = path_planner.main:main',
-	       'emergency_stop_keyboard = path_planner.emergency_stop_keyboard:main'
+            'path_planner = path_planner.main:main',
+            'emergency_stop_keyboard = path_planner.emergency_stop_keyboard:main',
         ],
     },
 )
