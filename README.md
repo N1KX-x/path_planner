@@ -314,7 +314,7 @@ In Terminal 1, start the TurtleBot3 bringup:
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/turtlebot3_ws/install/setup.bash
-export TURTLEBOT3_MODEL=burger
+export TURTLEBOT3_MODEL=waffle
 ros2 launch turtlebot3_bringup robot.launch.py
 ```
 
