@@ -29,12 +29,15 @@ from .config import (
     GRID_RESOLUTION,
     OBSTACLE_INFLATION_RADIUS,
     FRONT_OBSTACLE_STOP_DISTANCE,
+    PATH_REPLAN_COOLDOWN_SCANS,
+    PATH_REPLAN_LOOKAHEAD_DISTANCE,
     FRONT_DETECTION_ANGLE,
     PATH_DOWNSAMPLE_STEP,
     GOAL_TOLERANCE,
     ENABLE_EMERGENCY_STOP,
     RECOVERY_TURN_SPEED,
     RECOVERY_CLEAR_DISTANCE,
+    RECOVERY_REAR_CLEAR_DISTANCE,
     RECOVERY_BACKUP_SPEED,
     RECOVERY_BACKUP_TICKS,
     RECOVERY_MIN_TURN_TICKS,
@@ -57,6 +60,8 @@ class DijkstraNavigator(Node):
 
         self.goal_x = float(self.get_parameter("goal_x").value)
         self.goal_y = float(self.get_parameter("goal_y").value)
+        self.active_goal_x = self.goal_x
+        self.active_goal_y = self.goal_y
         self.grid = OccupancyGrid(
             width_m=MAP_WIDTH_M,
             height_m=MAP_HEIGHT_M,
@@ -82,6 +87,8 @@ class DijkstraNavigator(Node):
         self.path = []
         self.path_index = 0
         self.need_replan = True
+        self.path_replan_cooldown = 0
+        self.adjusted_goal_cell = None
         self.goal_reached = False
         self.shutdown_requested = False
         self.recovery_mode = False
@@ -255,6 +262,9 @@ class DijkstraNavigator(Node):
         if not self.initial_pose_set:
             return
 
+        if self.path_replan_cooldown > 0:
+            self.path_replan_cooldown -= 1
+
         self.grid.update_from_lidar(
             scan_msg=msg,
             robot_x=self.robot_x,
@@ -264,6 +274,21 @@ class DijkstraNavigator(Node):
 
         if self.obstacle_too_close(msg):
             self.enter_recovery()
+            return
+
+        if (
+            not self.recovery_mode
+            and not self.need_replan
+            and self.path_blocked_ahead()
+        ):
+            self.get_logger().warn(
+                "Current path is blocked by a LiDAR obstacle. Replanning early."
+            )
+            self.path = []
+            self.path_index = 0
+            self.need_replan = True
+            self.path_replan_cooldown = PATH_REPLAN_COOLDOWN_SCANS
+            self.stop_robot()
 
     def control_loop(self):
         """Main navigation loop: stop, recover, plan, or follow the next waypoint."""
@@ -289,10 +314,7 @@ class DijkstraNavigator(Node):
             self.run_recovery()
             return
 
-        distance_to_goal = math.sqrt(
-            (self.goal_x - self.robot_x) ** 2 +
-            (self.goal_y - self.robot_y) ** 2
-        )
+        distance_to_goal = self.distance_to_active_goal()
 
         if distance_to_goal < GOAL_TOLERANCE:
             self.finish_goal()
@@ -319,7 +341,7 @@ class DijkstraNavigator(Node):
                 self.finish_goal()
                 return
 
-            # The last waypoint was reached, but not close enough to the real goal.
+            # The last waypoint was reached, but not close enough to the current goal.
             self.get_logger().warn(
                 f"Path ended {distance_to_goal:.2f} m from goal. Replanning."
             )
@@ -386,6 +408,13 @@ class DijkstraNavigator(Node):
         cmd = Twist()
 
         if self.recovery_state == "BACKUP":
+            if self.latest_scan is None or not self.rear_is_clear(self.latest_scan):
+                self.stop_robot()
+                self.recovery_state = "TURN"
+                self.recovery_counter = 0
+                self.get_logger().warn("Recovery: rear blocked, turning in place.")
+                return
+
             cmd.linear.x = self.backup_speed
             cmd.angular.z = 0.0
             self.cmd_pub.publish(cmd)
@@ -469,10 +498,23 @@ class DijkstraNavigator(Node):
         self.clear_cell_radius(start_cell, radius_cells=3)
 
         goal_cell = requested_goal_cell
+        self.active_goal_x = self.goal_x
+        self.active_goal_y = self.goal_y
 
         if not self.grid.is_free_cell(goal_cell):
-            # If the exact goal is occupied, use the closest nearby free cell.
-            new_goal_cell = self.find_nearest_free_cell(goal_cell, max_radius_cells=15)
+            # If the exact goal is occupied, keep one stable nearby free goal.
+            if (
+                self.adjusted_goal_cell is not None
+                and self.grid.is_free_cell(self.adjusted_goal_cell)
+            ):
+                new_goal_cell = self.adjusted_goal_cell
+            else:
+                new_goal_cell = self.find_nearest_free_cell(
+                    goal_cell,
+                    max_radius_cells=15,
+                    prefer_x=self.robot_x,
+                    prefer_y=self.robot_y
+                )
 
             if new_goal_cell is None:
                 self.get_logger().warn("Goal cell is occupied and no nearby free cell was found.")
@@ -487,6 +529,11 @@ class DijkstraNavigator(Node):
             )
 
             goal_cell = new_goal_cell
+            self.adjusted_goal_cell = new_goal_cell
+            self.active_goal_x = new_goal_world[0]
+            self.active_goal_y = new_goal_world[1]
+        else:
+            self.adjusted_goal_cell = None
 
         cell_path = self.planner.plan(
             grid=self.grid.grid,
@@ -536,8 +583,8 @@ class DijkstraNavigator(Node):
                 if math.sqrt(dr ** 2 + dc ** 2) <= radius_cells:
                     self.grid.grid[row][col] = 0
 
-    def find_nearest_free_cell(self, blocked_cell, max_radius_cells=15):
-        """Search outward from a blocked goal and return the closest free cell."""
+    def find_nearest_free_cell(self, blocked_cell, max_radius_cells=15, prefer_x=None, prefer_y=None):
+        """Search outward from a blocked goal and return a stable nearby free cell."""
         center_row, center_col = blocked_cell
 
         if self.grid.is_free_cell(blocked_cell):
@@ -563,7 +610,14 @@ class DijkstraNavigator(Node):
                     if not self.grid.is_free_cell(cell):
                         continue
 
-                    distance = math.sqrt(dr ** 2 + dc ** 2)
+                    if prefer_x is None or prefer_y is None:
+                        distance = math.sqrt(dr ** 2 + dc ** 2)
+                    else:
+                        cell_x, cell_y = self.grid.grid_to_world(cell)
+                        distance = math.sqrt(
+                            (cell_x - prefer_x) ** 2 +
+                            (cell_y - prefer_y) ** 2
+                        )
 
                     if best_distance is None or distance < best_distance:
                         best_distance = distance
@@ -587,6 +641,60 @@ class DijkstraNavigator(Node):
             new_path.append(path[-1])
 
         return new_path
+
+    def distance_to_active_goal(self):
+        """Return distance from the robot to the goal used by the current plan."""
+        return math.sqrt(
+            (self.active_goal_x - self.robot_x) ** 2 +
+            (self.active_goal_y - self.robot_y) ** 2
+        )
+
+    def path_blocked_ahead(self):
+        """Return True when a known obstacle occupies a nearby planned path cell."""
+        if len(self.path) == 0:
+            return False
+
+        if self.path_index >= len(self.path):
+            return False
+
+        if self.path_replan_cooldown > 0:
+            return False
+
+        final_tolerance = max(GOAL_TOLERANCE, self.follower.waypoint_tolerance)
+
+        if self.distance_to_active_goal() < final_tolerance:
+            return False
+
+        previous_point = (self.robot_x, self.robot_y)
+        remaining_distance = PATH_REPLAN_LOOKAHEAD_DISTANCE
+
+        for index in range(self.path_index, len(self.path)):
+            next_point = self.path[index]
+            distance_to_goal_point = math.sqrt(
+                (next_point[0] - self.active_goal_x) ** 2 +
+                (next_point[1] - self.active_goal_y) ** 2
+            )
+
+            if distance_to_goal_point < final_tolerance:
+                return False
+
+            distance_to_next = math.sqrt(
+                (next_point[0] - previous_point[0]) ** 2 +
+                (next_point[1] - previous_point[1]) ** 2
+            )
+            remaining_distance -= distance_to_next
+
+            cell = self.grid.world_to_grid(next_point[0], next_point[1])
+
+            if cell is not None and not self.grid.is_free_cell(cell):
+                return True
+
+            if remaining_distance <= 0.0:
+                return False
+
+            previous_point = next_point
+
+        return False
 
     def get_sector_min(self, scan_msg, start_deg, end_deg):
         """Return the nearest valid LiDAR reading inside an angle range."""
@@ -648,6 +756,11 @@ class DijkstraNavigator(Node):
         )
 
         return min_front > RECOVERY_CLEAR_DISTANCE
+
+    def rear_is_clear(self, scan_msg):
+        """Check whether the robot has enough space behind it to back up."""
+        min_rear = self.get_sector_min(scan_msg, 135.0, -135.0)
+        return min_rear > RECOVERY_REAR_CLEAR_DISTANCE
 
     def stop_robot(self):
         """Publish a zero Twist command."""

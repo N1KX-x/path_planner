@@ -25,6 +25,12 @@ MAX_LIDAR_OBSTACLE_RANGE = 4.0
 # If an obstacle is closer than this in front, the robot enters recovery.
 FRONT_OBSTACLE_STOP_DISTANCE = 0.25
 
+# If the current path becomes blocked within this distance, replan before recovery.
+PATH_REPLAN_LOOKAHEAD_DISTANCE = 0.5
+
+# After an early replan, wait this many scans before triggering another one.
+PATH_REPLAN_COOLDOWN_SCANS = 10
+
 # Half-angle of the front danger zone, in radians.
 # 0.785 rad is 45 degrees on each side, 90 degrees total.
 FRONT_DETECTION_ANGLE = 0.785
@@ -34,6 +40,9 @@ RECOVERY_TURN_SPEED = 0.5
 
 # Recovery ends when the front LiDAR sector is clear by at least this distance.
 RECOVERY_CLEAR_DISTANCE = 0.65
+
+# Do not back up during recovery if the rear sector is closer than this.
+RECOVERY_REAR_CLEAR_DISTANCE = 0.35
 
 # Negative speed means backing up.
 RECOVERY_BACKUP_SPEED = -0.10
