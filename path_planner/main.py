@@ -282,7 +282,7 @@ class DijkstraNavigator(Node):
             and self.path_blocked_ahead()
         ):
             self.get_logger().warn(
-                "Current path is blocked by a LiDAR obstacle. Replanning early."
+                "Current path is blocked by obstacle. Replanning."
             )
             self.path = []
             self.path_index = 0
