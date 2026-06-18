@@ -1,9 +1,13 @@
 import math
+import os
+import struct
 import time
+import zlib
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from rclpy.signals import SignalHandlerOptions
 
 from sensor_msgs.msg import LaserScan
@@ -33,7 +37,10 @@ from .config import (
     RECOVERY_CLEAR_DISTANCE,
     RECOVERY_BACKUP_SPEED,
     RECOVERY_BACKUP_TICKS,
-    RECOVERY_MIN_TURN_TICKS
+    RECOVERY_MIN_TURN_TICKS,
+    SAVE_TRIAL_MAP,
+    TRIAL_MAP_OUTPUT_DIR,
+    TRIAL_MAP_PIXEL_SCALE
 )
 
 
@@ -70,6 +77,7 @@ class DijkstraNavigator(Node):
         self.robot_theta = 0.0
 
         self.latest_scan = None
+        self.robot_trail = [(0.0, 0.0)]
 
         self.path = []
         self.path_index = 0
@@ -89,7 +97,7 @@ class DijkstraNavigator(Node):
             LaserScan,
             "/scan",
             self.scan_callback,
-            10
+            qos_profile_sensor_data
         )
 
         self.odom_sub = self.create_subscription(
@@ -238,6 +246,7 @@ class DijkstraNavigator(Node):
         self.robot_x = dx * cos_t - dy * sin_t
         self.robot_y = dx * sin_t + dy * cos_t
         self.robot_theta = normalize_angle(yaw - self.initial_theta)
+        self.record_robot_trail_point()
 
     def scan_callback(self, msg):
         """Update the occupancy grid with LiDAR data and start recovery if blocked."""
@@ -648,6 +657,150 @@ class DijkstraNavigator(Node):
         cmd = Twist()
         self.cmd_pub.publish(cmd)
 
+    def record_robot_trail_point(self):
+        """Store the robot position occasionally for the final trial map."""
+        if len(self.robot_trail) == 0:
+            self.robot_trail.append((self.robot_x, self.robot_y))
+            return
+
+        last_x, last_y = self.robot_trail[-1]
+        distance = math.sqrt(
+            (self.robot_x - last_x) ** 2 +
+            (self.robot_y - last_y) ** 2
+        )
+
+        if distance >= self.grid.resolution:
+            self.robot_trail.append((self.robot_x, self.robot_y))
+
+    def save_trial_map(self):
+        """Save the final occupancy grid, path, robot trail, start, and goal as PNG."""
+        if not SAVE_TRIAL_MAP:
+            return
+
+        output_dir = os.path.expanduser(TRIAL_MAP_OUTPUT_DIR)
+        os.makedirs(output_dir, exist_ok=True)
+
+        filename = time.strftime("path_planner_trial_%Y%m%d_%H%M%S.png")
+        output_path = os.path.join(output_dir, filename)
+
+        scale = max(1, int(TRIAL_MAP_PIXEL_SCALE))
+        width = self.grid.cols * scale
+        height = self.grid.rows * scale
+        pixels = bytearray(width * height * 3)
+
+        free_color = (245, 245, 245)
+        obstacle_color = (35, 35, 35)
+
+        def paint_grid_cell(row, col, color):
+            if row < 0 or row >= self.grid.rows:
+                return
+
+            if col < 0 or col >= self.grid.cols:
+                return
+
+            for py in range(row * scale, (row + 1) * scale):
+                for px in range(col * scale, (col + 1) * scale):
+                    index = (py * width + px) * 3
+                    pixels[index] = color[0]
+                    pixels[index + 1] = color[1]
+                    pixels[index + 2] = color[2]
+
+        def paint_circle(cell, radius_cells, color):
+            if cell is None:
+                return
+
+            center_row, center_col = cell
+
+            for dr in range(-radius_cells, radius_cells + 1):
+                for dc in range(-radius_cells, radius_cells + 1):
+                    if math.sqrt(dr ** 2 + dc ** 2) <= radius_cells:
+                        paint_grid_cell(center_row + dr, center_col + dc, color)
+
+        def paint_line(start_cell, end_cell, color):
+            if start_cell is None or end_cell is None:
+                return
+
+            row0, col0 = start_cell
+            row1, col1 = end_cell
+
+            d_col = abs(col1 - col0)
+            d_row = -abs(row1 - row0)
+            step_col = 1 if col0 < col1 else -1
+            step_row = 1 if row0 < row1 else -1
+            error = d_col + d_row
+
+            while True:
+                paint_circle((row0, col0), 1, color)
+
+                if row0 == row1 and col0 == col1:
+                    break
+
+                error2 = 2 * error
+
+                if error2 >= d_row:
+                    error += d_row
+                    col0 += step_col
+
+                if error2 <= d_col:
+                    error += d_col
+                    row0 += step_row
+
+        def paint_world_polyline(points, color):
+            if len(points) == 0:
+                return
+
+            previous_cell = self.grid.world_to_grid(points[0][0], points[0][1])
+            paint_circle(previous_cell, 2, color)
+
+            for point in points[1:]:
+                current_cell = self.grid.world_to_grid(point[0], point[1])
+                paint_line(previous_cell, current_cell, color)
+                previous_cell = current_cell
+
+        for row in range(self.grid.rows):
+            for col in range(self.grid.cols):
+                if self.grid.grid[row][col] == 1:
+                    paint_grid_cell(row, col, obstacle_color)
+                else:
+                    paint_grid_cell(row, col, free_color)
+
+        paint_world_polyline(self.path, (50, 110, 235))
+        paint_world_polyline(self.robot_trail, (35, 170, 85))
+
+        paint_circle(self.grid.world_to_grid(0.0, 0.0), 4, (125, 70, 180))
+        paint_circle(self.grid.world_to_grid(self.goal_x, self.goal_y), 4, (220, 35, 35))
+        paint_circle(self.grid.world_to_grid(self.robot_x, self.robot_y), 4, (245, 145, 35))
+
+        self.write_png(output_path, width, height, pixels)
+        self.get_logger().info(f"Saved trial map: {output_path}")
+
+    def write_png(self, output_path, width, height, pixels):
+        """Write RGB pixels to a PNG file using only the Python standard library."""
+        def png_chunk(chunk_type, data):
+            chunk = chunk_type + data
+            return (
+                struct.pack(">I", len(data)) +
+                chunk +
+                struct.pack(">I", zlib.crc32(chunk) & 0xffffffff)
+            )
+
+        raw_rows = bytearray()
+        row_bytes = width * 3
+
+        for row in range(height):
+            raw_rows.append(0)
+            start = row * row_bytes
+            raw_rows.extend(pixels[start:start + row_bytes])
+
+        png_data = bytearray()
+        png_data.extend(b"\x89PNG\r\n\x1a\n")
+        png_data.extend(png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)))
+        png_data.extend(png_chunk(b"IDAT", zlib.compress(bytes(raw_rows), 9)))
+        png_data.extend(png_chunk(b"IEND", b""))
+
+        with open(output_path, "wb") as png_file:
+            png_file.write(png_data)
+
     def finish_goal(self):
         """Stop the robot and shut down the node after the target is reached."""
         if self.goal_reached:
@@ -657,12 +810,18 @@ class DijkstraNavigator(Node):
 
         self.goal_reached = True
         self.recovery_mode = False
-        self.path = []
-        self.path_index = 0
         self.need_replan = False
 
         for _ in range(10):
             self.stop_robot()
+
+        try:
+            self.save_trial_map()
+        except Exception as exc:
+            self.get_logger().warn(f"Could not save trial map: {exc}")
+
+        self.path = []
+        self.path_index = 0
 
         self.shutdown_requested = True
         self.get_logger().info("Goal reached. Shutting down path planner.")

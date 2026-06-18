@@ -14,19 +14,20 @@ MAP_WIDTH_M = 15.0
 MAP_HEIGHT_M = 15.0
 
 # Smaller resolution gives a more detailed map, but planning takes longer.
-GRID_RESOLUTION = 0.1
+GRID_RESOLUTION = 0.03
 
 # Extra safety space around each obstacle. Increase this if the robot gets too close.
 OBSTACLE_INFLATION_RADIUS = 0.20
 
 # LiDAR readings farther than this are ignored for obstacle marking.
-MAX_LIDAR_OBSTACLE_RANGE = 3.0
+MAX_LIDAR_OBSTACLE_RANGE = 4.0
 
 # If an obstacle is closer than this in front, the robot enters recovery.
 FRONT_OBSTACLE_STOP_DISTANCE = 0.25
 
 # Half-angle of the front danger zone, in radians.
-FRONT_DETECTION_ANGLE = 0.45
+# 0.785 rad is 45 degrees on each side, 90 degrees total.
+FRONT_DETECTION_ANGLE = 0.785
 
 # Recovery is used when the robot gets blocked by an obstacle.
 RECOVERY_TURN_SPEED = 0.5
@@ -42,7 +43,7 @@ RECOVERY_BACKUP_TICKS = 15
 RECOVERY_MIN_TURN_TICKS = 12
 
 # Motion limits for the path follower.
-MAX_LINEAR_SPEED = 0.15
+MAX_LINEAR_SPEED = 1.0
 MAX_ANGULAR_SPEED = 0.8
 
 # Distance from a waypoint where it counts as reached.
@@ -60,3 +61,8 @@ PATH_DOWNSAMPLE_STEP = 1
 
 # Distance from the final target where the program prints "Goal reached".
 GOAL_TOLERANCE = 0.1
+
+# Save a PNG map when the robot reaches the goal.
+SAVE_TRIAL_MAP = True
+TRIAL_MAP_OUTPUT_DIR = "path_planner_maps"
+TRIAL_MAP_PIXEL_SCALE = 2
