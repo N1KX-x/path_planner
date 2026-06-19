@@ -14,16 +14,16 @@ MAP_WIDTH_M = 15.0
 MAP_HEIGHT_M = 15.0
 
 # Smaller resolution gives a more detailed map, but planning takes longer.
-GRID_RESOLUTION = 0.02
+GRID_RESOLUTION = 0.01
 
 # Extra safety space around each obstacle. Increase this if the robot gets too close.
 OBSTACLE_INFLATION_RADIUS = 0.15
 
 # LiDAR readings farther than this are ignored for obstacle marking.
-MAX_LIDAR_OBSTACLE_RANGE = 4.0
+MAX_LIDAR_OBSTACLE_RANGE = 3.0
 
 # If an obstacle is closer than this in front, the robot enters recovery.
-FRONT_OBSTACLE_STOP_DISTANCE = 0.20
+FRONT_OBSTACLE_STOP_DISTANCE = 0.30
 
 # If the current path becomes blocked within this distance, replan before recovery.
 PATH_REPLAN_LOOKAHEAD_DISTANCE = 0.3
