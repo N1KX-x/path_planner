@@ -14,10 +14,10 @@ MAP_WIDTH_M = 15.0
 MAP_HEIGHT_M = 15.0
 
 # Smaller resolution gives a more detailed map, but planning takes longer.
-GRID_RESOLUTION = 0.01
+GRID_RESOLUTION = 0.1
 
 # Extra safety space around each obstacle. Increase this if the robot gets too close.
-OBSTACLE_INFLATION_RADIUS = 0.15
+OBSTACLE_INFLATION_RADIUS = 0.30
 
 # LiDAR readings farther than this are ignored for obstacle marking.
 MAX_LIDAR_OBSTACLE_RANGE = 3.0
@@ -26,14 +26,14 @@ MAX_LIDAR_OBSTACLE_RANGE = 3.0
 FRONT_OBSTACLE_STOP_DISTANCE = 0.30
 
 # If the current path becomes blocked within this distance, replan before recovery.
-PATH_REPLAN_LOOKAHEAD_DISTANCE = 0.3
+PATH_REPLAN_LOOKAHEAD_DISTANCE = 4.0
 
 # After an early replan, wait this many scans before triggering another one.
 PATH_REPLAN_COOLDOWN_SCANS = 15
 
 # Half-angle of the front danger zone, in radians.
 # 0.785 rad is 45 degrees on each side, 90 degrees total.
-FRONT_DETECTION_ANGLE = 0.8785
+FRONT_DETECTION_ANGLE = 0.685
 
 # Recovery is used when the robot gets blocked by an obstacle.
 RECOVERY_TURN_SPEED = 0.5
@@ -48,11 +48,11 @@ RECOVERY_REAR_CLEAR_DISTANCE = 0.35
 RECOVERY_BACKUP_SPEED = -0.10
 
 # Timer ticks are based on the 0.1 second control loop.
-RECOVERY_BACKUP_TICKS = 10
+RECOVERY_BACKUP_TICKS = 15
 RECOVERY_MIN_TURN_TICKS = 12
 
 # Motion limits for the path follower.
-MAX_LINEAR_SPEED = 5.0
+MAX_LINEAR_SPEED = 1.0
 MAX_ANGULAR_SPEED = 0.8
 
 # Distance from a waypoint where it counts as reached.
@@ -63,7 +63,7 @@ K_LINEAR = 0.8
 K_ANGULAR = 1.5
 
 # If the angle error is larger than this, rotate in place before driving forward.
-ROTATE_FIRST_ANGLE = 0.35
+ROTATE_FIRST_ANGLE = 0.40
 
 # Keep every Nth path point. Use 1 for the full Dijkstra path.
 PATH_DOWNSAMPLE_STEP = 1
